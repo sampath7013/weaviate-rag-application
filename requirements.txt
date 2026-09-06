@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+weaviate-client
+openai
+python-dotenv
+pydantic
+pydantic-settings
+pymupdf
+python-multipart
