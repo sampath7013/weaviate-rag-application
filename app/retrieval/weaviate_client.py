@@ -32,6 +32,10 @@ def create_collection(client):
                 data_type=DataType.TEXT,
             ),
             Property(
+                name="document_id",
+                data_type=DataType.TEXT,
+            ),
+            Property(
                 name="page_number",
                 data_type=DataType.INT,
             ),
@@ -42,4 +46,31 @@ def create_collection(client):
         ],
     )
 
-    print(f"Collection '{collection_name}' created successfully.")
+    print(
+        f"Collection '{collection_name}' created successfully."
+    )
+
+
+def ensure_document_id_property(client):
+    collection = client.collections.use(
+        settings.weaviate_collection
+    )
+
+    config = collection.config.get()
+
+    property_names = {
+        prop.name for prop in config.properties
+    }
+
+    if "document_id" not in property_names:
+        collection.config.add_property(
+            Property(
+                name="document_id",
+                data_type=DataType.TEXT,
+            )
+        )
+
+        print("Added 'document_id' property.")
+
+    else:
+        print("'document_id' property already exists.")

@@ -8,8 +8,12 @@ from app.retrieval.weaviate_client import (
 )
 
 
-def ingest_pdf(file_path: str):
+def ingest_pdf(
+    file_path: str,
+    document_id: str,
+):
     print(f"Loading PDF: {file_path}")
+    print(f"Document ID: {document_id}")
 
     pages = load_pdf(file_path)
 
@@ -28,9 +32,13 @@ def ingest_pdf(file_path: str):
             settings.weaviate_collection
         )
 
-        for index, chunk in enumerate(chunks, start=1):
+        for index, chunk in enumerate(
+            chunks,
+            start=1,
+        ):
             print(
-                f"Processing chunk {index}/{len(chunks)}..."
+                f"Processing chunk "
+                f"{index}/{len(chunks)}..."
             )
 
             embedding = create_embedding(
@@ -41,16 +49,20 @@ def ingest_pdf(file_path: str):
                 properties={
                     "text": chunk["text"],
                     "document_name": chunk["document_name"],
+                    "document_id": document_id,
                     "page_number": chunk["page_number"],
                     "chunk_index": chunk["chunk_index"],
                 },
                 vector=embedding,
             )
 
-        print("\nPDF ingestion completed successfully!")
-
         return {
-            "filename": chunks[0]["document_name"] if chunks else None,
+            "document_id": document_id,
+            "filename": (
+                chunks[0]["document_name"]
+                if chunks
+                else None
+            ),
             "pages": len(pages),
             "chunks": len(chunks),
         }

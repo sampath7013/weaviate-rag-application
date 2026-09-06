@@ -1,6 +1,7 @@
 from app.retrieval.weaviate_client import (
     get_weaviate_client,
     create_collection,
+    ensure_document_id_property,
 )
 
 
@@ -11,6 +12,8 @@ try:
     print("Ready:", client.is_ready())
 
     create_collection(client)
+
+    ensure_document_id_property(client)
 
 finally:
     client.close()
