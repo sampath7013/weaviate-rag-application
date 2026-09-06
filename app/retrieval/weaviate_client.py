@@ -1,10 +1,37 @@
 import weaviate
-from weaviate.classes.config import Configure, Property, DataType
+
+from weaviate.classes.config import (
+    Configure,
+    Property,
+    DataType,
+)
+
+from weaviate.classes.init import Auth
 
 from app.config import settings
 
 
 def get_weaviate_client():
+
+    if settings.app_env.lower() == "production":
+
+        if not settings.weaviate_url:
+            raise ValueError(
+                "WEAVIATE_URL is required in production"
+            )
+
+        if not settings.weaviate_api_key:
+            raise ValueError(
+                "WEAVIATE_API_KEY is required in production"
+            )
+
+        return weaviate.connect_to_weaviate_cloud(
+            cluster_url=settings.weaviate_url,
+            auth_credentials=Auth.api_key(
+                settings.weaviate_api_key
+            ),
+        )
+
     return weaviate.connect_to_local(
         host=settings.weaviate_host,
         port=settings.weaviate_http_port,
@@ -13,10 +40,13 @@ def get_weaviate_client():
 
 
 def create_collection(client):
+
     collection_name = settings.weaviate_collection
 
     if client.collections.exists(collection_name):
-        print(f"Collection '{collection_name}' already exists.")
+        print(
+            f"Collection '{collection_name}' already exists."
+        )
         return
 
     client.collections.create(
@@ -36,6 +66,10 @@ def create_collection(client):
                 data_type=DataType.TEXT,
             ),
             Property(
+                name="file_hash",
+                data_type=DataType.TEXT,
+            ),
+            Property(
                 name="page_number",
                 data_type=DataType.INT,
             ),
@@ -51,26 +85,39 @@ def create_collection(client):
     )
 
 
-def ensure_document_id_property(client):
+def ensure_required_properties(client):
+
     collection = client.collections.use(
         settings.weaviate_collection
     )
 
     config = collection.config.get()
 
-    property_names = {
+    existing_properties = {
         prop.name for prop in config.properties
     }
 
-    if "document_id" not in property_names:
-        collection.config.add_property(
-            Property(
-                name="document_id",
-                data_type=DataType.TEXT,
+    required_properties = {
+        "document_id": DataType.TEXT,
+        "file_hash": DataType.TEXT,
+    }
+
+    for property_name, data_type in required_properties.items():
+
+        if property_name not in existing_properties:
+
+            collection.config.add_property(
+                Property(
+                    name=property_name,
+                    data_type=data_type,
+                )
             )
-        )
 
-        print("Added 'document_id' property.")
+            print(
+                f"Added '{property_name}' property."
+            )
 
-    else:
-        print("'document_id' property already exists.")
+        else:
+            print(
+                f"'{property_name}' property already exists."
+            )
