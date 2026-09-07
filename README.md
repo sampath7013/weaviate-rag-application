@@ -1,71 +1,57 @@
-# 📚 Document RAG Assistant
+# Document RAG Assistant
 
-A production-style **Retrieval-Augmented Generation (RAG)** application that allows users to upload PDF documents and ask natural-language questions grounded in the uploaded document.
+A production-style Retrieval-Augmented Generation (RAG) application
+for querying PDF documents using hybrid semantic + keyword search,
+grounded LLM generation, relevance filtering, and source attribution.
 
-The application uses **OpenAI embeddings and LLMs**, **Weaviate vector database**, **FastAPI**, and **Streamlit** to provide document-aware question answering with source attribution and relevance filtering.
+## 🚀 Live Demo
 
----
+**Live Application:**  
+https://sampath-rag-assistant.streamlit.app
 
-## 🚀 Features
+## ✨ Key Features
 
-- 📄 Upload and process PDF documents
-- ✂️ Automatic document chunking
-- 🧠 OpenAI embeddings
-- 🔎 Vector and hybrid retrieval using Weaviate
-- 💬 Document-grounded question answering
-- 📌 Source page and chunk attribution
-- 🎯 Configurable relevance threshold
-- ⚖️ Adjustable semantic vs keyword search balance
-- 🔁 Duplicate PDF detection using SHA-256
-- 🆔 Document-specific retrieval using unique document IDs
-- 📦 Batch embedding and vector insertion
-- 🛡️ Grounded-answer protection for unrelated questions
-- 📝 Structured application logging
-- ⚡ FastAPI backend
-- 🎨 Streamlit user interface
+- PDF ingestion and text extraction with PyMuPDF
+- Intelligent document chunking
+- OpenAI `text-embedding-3-small` embeddings
+- Weaviate vector database
+- Hybrid BM25 + semantic vector retrieval
+- Configurable semantic/keyword weighting
+- Document-specific retrieval using `document_id`
+- Minimum relevance-score filtering
+- LLM-based context relevance validation
+- Grounded answer generation
+- Source/page attribution
+- SHA-256 duplicate-document detection
+- Batch embedding and vector insertion
+- Application logging and error handling
+- FastAPI backend
+- Streamlit user interface
+- Cloud deployment with persistent vector storage
 
----
-## 🖥️ Application Preview
-
-![Document RAG Assistant](assets/rag-application-ui.png)
 ## 🏗️ Architecture
 
-The application follows a standard RAG pipeline:
-
-```text
-                       PDF Upload
-                           │
-                           ▼
-                    Text Extraction
-                      (PyMuPDF)
-                           │
-                           ▼
-                    Text Chunking
-                           │
-                           ▼
-                   OpenAI Embeddings
-                           │
-                           ▼
-                  Weaviate Vector DB
-                           │
-                           │
-User Question ──► Query Embedding
-                           │
-                           ▼
-                  Hybrid Retrieval
-                 Vector + Keyword
-                           │
-                           ▼
-                 Relevance Filtering
-                           │
-                           ▼
-                  Retrieved Context
-                           │
-                           ▼
-                     OpenAI LLM
-                           │
-                           ▼
-              Grounded Answer + Sources
+PDF
+ ↓
+Text Extraction
+ ↓
+Chunking
+ ↓
+SHA-256 Deduplication
+ ↓
+OpenAI Embeddings
+ ↓
+Weaviate Vector Database
+ ↓
+Hybrid Search (BM25 + Vector)
+ ↓
+Relevance Filtering
+ ↓
+LLM Relevance Gate
+ ↓
+Grounded Answer Generation
+ ↓
+Answer + Sources
 
 | Technology | Purpose                              |
 | ---------- | ------------------------------------ |
