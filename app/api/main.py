@@ -20,20 +20,32 @@ from app.ingestion.ingest import ingest_pdf
 from app.logging_config import configure_logging
 
 
+# ============================================================
+# Logging
+# ============================================================
+
 configure_logging()
 
 logger = logging.getLogger(__name__)
 
 
+# ============================================================
+# FastAPI application
+# ============================================================
+
 app = FastAPI(
     title="Weaviate RAG API",
     description=(
-        "Production-style RAG application "
-        "using Weaviate and OpenAI"
+        "Production-style Retrieval-Augmented Generation "
+        "application using OpenAI and Weaviate."
     ),
     version="1.0.0",
 )
 
+
+# ============================================================
+# Upload directory
+# ============================================================
 
 UPLOAD_DIR = Path("data/uploads")
 
@@ -43,12 +55,16 @@ UPLOAD_DIR.mkdir(
 )
 
 
+# ============================================================
+# Request model
+# ============================================================
+
 class QueryRequest(BaseModel):
 
     question: str = Field(
         min_length=1,
         description=(
-            "Question to ask the document knowledge base"
+            "Question to ask the document knowledge base."
         ),
     )
 
@@ -57,7 +73,8 @@ class QueryRequest(BaseModel):
         ge=1,
         le=20,
         description=(
-            "Number of document chunks to retrieve"
+            "Maximum number of candidate chunks "
+            "to retrieve from Weaviate."
         ),
     )
 
@@ -65,67 +82,114 @@ class QueryRequest(BaseModel):
         default=None,
         description=(
             "Optional document ID. "
-            "If provided, retrieval searches "
-            "only that document."
+            "If provided, retrieval is restricted "
+            "to that document."
         ),
     )
 
-    max_distance: float | None = Field(
-        default=0.55,
+    alpha: float = Field(
+        default=0.50,
         ge=0.0,
-        le=2.0,
+        le=1.0,
         description=(
-            "Maximum vector distance allowed. "
-            "Lower values require stronger "
-            "semantic similarity."
+            "Hybrid search balance. "
+            "0 means keyword/BM25 only, "
+            "1 means vector/semantic only."
         ),
     )
 
+    min_score: float | None = Field(
+        default=0.20,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum hybrid relevance score required "
+            "for a retrieved chunk."
+        ),
+    )
+
+
+# ============================================================
+# Root endpoint
+# ============================================================
 
 @app.get("/")
 def root():
+
     return {
         "message": "Weaviate RAG API is running"
     }
 
 
+# ============================================================
+# Health endpoint
+# ============================================================
+
 @app.get("/health")
 def health():
+
     return {
         "status": "healthy"
     }
 
 
+# ============================================================
+# Ask endpoint
+# ============================================================
+
 @app.post("/ask")
 def ask(
     request: QueryRequest,
 ):
+
     logger.info(
-        "ask_request | document_id=%s | top_k=%s | max_distance=%s",
+        (
+            "ask_request | "
+            "document_id=%s | "
+            "top_k=%s | "
+            "alpha=%s | "
+            "min_score=%s"
+        ),
         request.document_id,
         request.top_k,
-        request.max_distance,
+        request.alpha,
+        request.min_score,
     )
 
     try:
+
         result = ask_rag(
             question=request.question,
             top_k=request.top_k,
             document_id=request.document_id,
-            max_distance=request.max_distance,
+            alpha=request.alpha,
+            min_score=request.min_score,
         )
 
         logger.info(
-            "ask_completed | document_id=%s | sources=%s",
+            (
+                "ask_completed | "
+                "document_id=%s | "
+                "sources=%s"
+            ),
             request.document_id,
-            len(result.get("sources", [])),
+            len(
+                result.get(
+                    "sources",
+                    [],
+                )
+            ),
         )
 
         return result
 
     except Exception:
+
         logger.exception(
-            "ask_failed | document_id=%s",
+            (
+                "ask_failed | "
+                "document_id=%s"
+            ),
             request.document_id,
         )
 
@@ -138,32 +202,62 @@ def ask(
         )
 
 
+# ============================================================
+# Upload endpoint
+# ============================================================
+
 @app.post("/documents/upload")
 async def upload_document(
     file: UploadFile = File(...),
 ):
 
+    # --------------------------------------------------------
+    # Validate filename
+    # --------------------------------------------------------
+
     if not file.filename:
+
         raise HTTPException(
             status_code=400,
             detail="File name is missing",
         )
 
+    # Prevent path traversal such as:
+    # ../../malicious.pdf
+
     original_filename = Path(
         file.filename
     ).name
 
+
+    # --------------------------------------------------------
+    # Validate PDF extension
+    # --------------------------------------------------------
+
     if not original_filename.lower().endswith(
         ".pdf"
     ):
+
         raise HTTPException(
             status_code=400,
-            detail="Only PDF files are supported",
+            detail=(
+                "Only PDF files are supported"
+            ),
         )
+
+
+    # --------------------------------------------------------
+    # Generate unique document ID
+    # --------------------------------------------------------
 
     document_id = str(
         uuid.uuid4()
     )
+
+
+    # --------------------------------------------------------
+    # Create local storage filename
+    # --------------------------------------------------------
 
     stored_filename = (
         f"{document_id}_{original_filename}"
@@ -174,13 +268,24 @@ async def upload_document(
         stored_filename
     )
 
+
     logger.info(
-        "upload_started | document_id=%s | filename=%s",
+        (
+            "upload_started | "
+            "document_id=%s | "
+            "filename=%s"
+        ),
         document_id,
         original_filename,
     )
 
+
     try:
+
+        # ----------------------------------------------------
+        # Save uploaded file
+        # ----------------------------------------------------
+
         with file_path.open(
             "wb"
         ) as buffer:
@@ -190,21 +295,46 @@ async def upload_document(
                 buffer,
             )
 
+
+        # ----------------------------------------------------
+        # Ingest PDF
+        # ----------------------------------------------------
+
         ingestion_result = ingest_pdf(
-            file_path=str(file_path),
+            file_path=str(
+                file_path
+            ),
             document_id=document_id,
             document_name=original_filename,
         )
 
-        if ingestion_result["duplicate"]:
+
+        # ----------------------------------------------------
+        # Duplicate document
+        # ----------------------------------------------------
+
+        if ingestion_result[
+            "duplicate"
+        ]:
+
+            # Remove unnecessary duplicate
+            # physical file.
 
             if file_path.exists():
                 file_path.unlink()
 
             logger.info(
-                "duplicate_document | document_id=%s | filename=%s",
-                ingestion_result["document_id"],
-                ingestion_result["filename"],
+                (
+                    "duplicate_document | "
+                    "document_id=%s | "
+                    "filename=%s"
+                ),
+                ingestion_result[
+                    "document_id"
+                ],
+                ingestion_result[
+                    "filename"
+                ],
             )
 
             return {
@@ -225,12 +355,31 @@ async def upload_document(
                     True,
             }
 
+
+        # ----------------------------------------------------
+        # Successful ingestion
+        # ----------------------------------------------------
+
         logger.info(
-            "upload_completed | document_id=%s | filename=%s | pages=%s | chunks=%s",
-            ingestion_result["document_id"],
-            ingestion_result["filename"],
-            ingestion_result["pages"],
-            ingestion_result["chunks"],
+            (
+                "upload_completed | "
+                "document_id=%s | "
+                "filename=%s | "
+                "pages=%s | "
+                "chunks=%s"
+            ),
+            ingestion_result[
+                "document_id"
+            ],
+            ingestion_result[
+                "filename"
+            ],
+            ingestion_result[
+                "pages"
+            ],
+            ingestion_result[
+                "chunks"
+            ],
         )
 
         return {
@@ -261,15 +410,27 @@ async def upload_document(
                 False,
         }
 
+
     except HTTPException:
+
         raise
 
+
     except Exception:
+
         logger.exception(
-            "upload_failed | document_id=%s | filename=%s",
+            (
+                "upload_failed | "
+                "document_id=%s | "
+                "filename=%s"
+            ),
             document_id,
             original_filename,
         )
+
+        # ----------------------------------------------------
+        # Clean up failed upload
+        # ----------------------------------------------------
 
         if file_path.exists():
             file_path.unlink()
@@ -282,5 +443,7 @@ async def upload_document(
             ),
         )
 
+
     finally:
+
         await file.close()

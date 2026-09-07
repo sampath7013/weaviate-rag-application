@@ -66,13 +66,6 @@ st.markdown(
         margin-bottom: 1rem;
     }
 
-    .source-card {
-        padding: 0.8rem;
-        border-radius: 8px;
-        background-color: rgba(100, 116, 139, 0.06);
-        margin-bottom: 0.8rem;
-    }
-
     </style>
     """,
     unsafe_allow_html=True,
@@ -80,7 +73,7 @@ st.markdown(
 
 
 # ============================================================
-# Streamlit Cloud secrets
+# Load Streamlit Cloud secrets
 # ============================================================
 
 def load_streamlit_secrets() -> None:
@@ -112,7 +105,7 @@ load_streamlit_secrets()
 
 
 # ============================================================
-# Import application modules
+# Import application logic
 # ============================================================
 
 from app.generation.rag_chain import ask_rag
@@ -161,6 +154,10 @@ with st.sidebar:
 
     st.divider()
 
+    # --------------------------------------------------------
+    # Retrieval settings
+    # --------------------------------------------------------
+
     st.subheader("Retrieval Settings")
 
     top_k = st.slider(
@@ -169,22 +166,43 @@ with st.sidebar:
         max_value=10,
         value=5,
         step=1,
-        help="Maximum number of candidate chunks retrieved.",
+        help=(
+            "Maximum number of candidate chunks "
+            "retrieved from Weaviate."
+        ),
     )
 
-    max_distance = st.slider(
-        "Maximum vector distance",
-        min_value=0.10,
-        max_value=1.00,
-        value=0.55,
+    alpha = st.slider(
+        "Semantic vs keyword balance",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.50,
         step=0.05,
         help=(
-            "Lower values require stronger semantic similarity. "
-            "Chunks above this distance are filtered out."
+            "Controls hybrid search. "
+            "0 = keyword/BM25 only, "
+            "1 = semantic/vector only. "
+            "0.50 gives equal weight to both."
+        ),
+    )
+
+    min_score = st.slider(
+        "Minimum relevance score",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.20,
+        step=0.05,
+        help=(
+            "Retrieved chunks below this hybrid "
+            "relevance score are discarded."
         ),
     )
 
     st.divider()
+
+    # --------------------------------------------------------
+    # Current document
+    # --------------------------------------------------------
 
     st.subheader("Current Document")
 
@@ -225,12 +243,16 @@ with st.sidebar:
 
     st.divider()
 
+    # --------------------------------------------------------
+    # About project
+    # --------------------------------------------------------
+
     with st.expander("About this project"):
 
         st.write(
             "A production-style Retrieval-Augmented Generation "
-            "application that combines semantic search with "
-            "grounded LLM responses."
+            "application combining semantic vector search and "
+            "BM25 keyword search."
         )
 
         st.markdown(
@@ -240,11 +262,13 @@ with st.sidebar:
             - PDF ingestion
             - SHA-256 duplicate detection
             - Batch embeddings
-            - Weaviate vector search
+            - Weaviate hybrid retrieval
+            - BM25 + semantic search
             - Document-specific filtering
-            - Relevance thresholding
+            - Relevance score filtering
+            - LLM relevance gate
+            - Grounded answer generation
             - Source citations
-            - OpenAI answer generation
             """
         )
 
@@ -280,7 +304,7 @@ st.markdown(
     <span class="tech-badge">OpenAI</span>
     <span class="tech-badge">Weaviate</span>
     <span class="tech-badge">FastAPI</span>
-    <span class="tech-badge">RAG</span>
+    <span class="tech-badge">Hybrid RAG</span>
     """,
     unsafe_allow_html=True,
 )
@@ -309,7 +333,9 @@ if process_document and uploaded_file is not None:
             expanded=True,
         ) as status:
 
-            st.write("Saving PDF...")
+            st.write(
+                "Saving PDF..."
+            )
 
             suffix = Path(
                 original_filename
@@ -324,9 +350,7 @@ if process_document and uploaded_file is not None:
                     uploaded_file.getbuffer()
                 )
 
-                temporary_path = (
-                    temporary_file.name
-                )
+                temporary_path = temporary_file.name
 
             st.write(
                 "Checking for duplicate document..."
@@ -370,6 +394,10 @@ if process_document and uploaded_file is not None:
                 result.get("chunks")
             )
 
+            # ------------------------------------------------
+            # Duplicate document
+            # ------------------------------------------------
+
             if result["duplicate"]:
 
                 status.update(
@@ -386,10 +414,16 @@ if process_document and uploaded_file is not None:
                     "The existing index was reused."
                 )
 
+            # ------------------------------------------------
+            # New document
+            # ------------------------------------------------
+
             else:
 
                 status.update(
-                    label="Document processed successfully.",
+                    label=(
+                        "Document processed successfully."
+                    ),
                     state="complete",
                     expanded=False,
                 )
@@ -433,7 +467,9 @@ if not st.session_state.document_ready:
 
     with col1:
 
-        st.markdown("### 1. Upload")
+        st.markdown(
+            "### 1. Upload"
+        )
 
         st.write(
             "Upload a PDF from the sidebar."
@@ -441,7 +477,9 @@ if not st.session_state.document_ready:
 
     with col2:
 
-        st.markdown("### 2. Index")
+        st.markdown(
+            "### 2. Index"
+        )
 
         st.write(
             "The document is chunked, embedded, "
@@ -450,7 +488,9 @@ if not st.session_state.document_ready:
 
     with col3:
 
-        st.markdown("### 3. Ask")
+        st.markdown(
+            "### 3. Ask"
+        )
 
         st.write(
             "Ask natural-language questions and "
@@ -479,12 +519,106 @@ else:
         )
 
         st.caption(
-            "Example: “Summarize the main points of this document.”"
+            "Example: "
+            "“Summarize the main points of this document.”"
         )
 
 
 # ============================================================
-# Render previous messages
+# Source rendering helper
+# ============================================================
+
+def render_sources(
+    sources: list[dict],
+) -> None:
+
+    if not sources:
+        return
+
+    with st.expander(
+        f"Sources ({len(sources)})"
+    ):
+
+        for index, source in enumerate(
+            sources,
+            start=1,
+        ):
+
+            st.markdown(
+                f"#### Source {index}"
+            )
+
+            col1, col2, col3 = (
+                st.columns(3)
+            )
+
+            with col1:
+
+                st.caption(
+                    "Page"
+                )
+
+                st.write(
+                    source.get(
+                        "page_number",
+                        "N/A",
+                    )
+                )
+
+            with col2:
+
+                st.caption(
+                    "Chunk"
+                )
+
+                st.write(
+                    source.get(
+                        "chunk_index",
+                        "N/A",
+                    )
+                )
+
+            with col3:
+
+                st.caption(
+                    "Relevance"
+                )
+
+                score = source.get(
+                    "score"
+                )
+
+                if score is not None:
+
+                    st.write(
+                        f"{score:.4f}"
+                    )
+
+                else:
+
+                    st.write(
+                        "N/A"
+                    )
+
+            st.caption(
+                source.get(
+                    "document_name",
+                    "Unknown document",
+                )
+            )
+
+            st.write(
+                source.get(
+                    "text",
+                    "",
+                )
+            )
+
+            st.divider()
+
+
+# ============================================================
+# Render previous conversation
 # ============================================================
 
 for message in st.session_state.messages:
@@ -502,74 +636,9 @@ for message in st.session_state.messages:
             and message.get("sources")
         ):
 
-            sources = message[
-                "sources"
-            ]
-
-            with st.expander(
-                f"Sources ({len(sources)})"
-            ):
-
-                for index, source in enumerate(
-                    sources,
-                    start=1,
-                ):
-
-                    distance = source.get(
-                        "distance"
-                    )
-
-                    st.markdown(
-                        f"#### Source {index}"
-                    )
-
-                    col1, col2, col3 = (
-                        st.columns(3)
-                    )
-
-                    with col1:
-                        st.caption("Page")
-                        st.write(
-                            source.get(
-                                "page_number",
-                                "N/A",
-                            )
-                        )
-
-                    with col2:
-                        st.caption("Chunk")
-                        st.write(
-                            source.get(
-                                "chunk_index",
-                                "N/A",
-                            )
-                        )
-
-                    with col3:
-                        st.caption("Distance")
-
-                        if distance is not None:
-                            st.write(
-                                f"{distance:.4f}"
-                            )
-                        else:
-                            st.write("N/A")
-
-                    st.caption(
-                        source.get(
-                            "document_name",
-                            "Unknown document",
-                        )
-                    )
-
-                    st.write(
-                        source.get(
-                            "text",
-                            "",
-                        )
-                    )
-
-                    st.divider()
+            render_sources(
+                message["sources"]
+            )
 
 
 # ============================================================
@@ -587,7 +656,7 @@ question = st.chat_input(
 
 
 # ============================================================
-# Handle question
+# Handle RAG question
 # ============================================================
 
 if question:
@@ -596,6 +665,10 @@ if question:
 
     if cleaned_question:
 
+        # ----------------------------------------------------
+        # Store user message
+        # ----------------------------------------------------
+
         st.session_state.messages.append(
             {
                 "role": "user",
@@ -603,13 +676,25 @@ if question:
             }
         )
 
-        with st.chat_message("user"):
+        # ----------------------------------------------------
+        # Display user message
+        # ----------------------------------------------------
+
+        with st.chat_message(
+            "user"
+        ):
 
             st.markdown(
                 cleaned_question
             )
 
-        with st.chat_message("assistant"):
+        # ----------------------------------------------------
+        # Generate assistant response
+        # ----------------------------------------------------
+
+        with st.chat_message(
+            "assistant"
+        ):
 
             try:
 
@@ -623,14 +708,15 @@ if question:
                         document_id=(
                             st.session_state.document_id
                         ),
-                        max_distance=max_distance,
+                        alpha=alpha,
+                        min_score=min_score,
                     )
 
                 answer = result.get(
                     "answer",
                     (
-                        "The document does not contain "
-                        "enough information to answer "
+                        "The available document does not contain "
+                        "enough relevant information to answer "
                         "this question."
                     ),
                 )
@@ -640,99 +726,34 @@ if question:
                     [],
                 )
 
+                # ------------------------------------------------
+                # Display answer
+                # ------------------------------------------------
+
                 st.markdown(
                     answer
                 )
 
+                # ------------------------------------------------
+                # Display sources
+                # ------------------------------------------------
+
                 if sources:
 
-                    with st.expander(
-                        f"Sources ({len(sources)})"
-                    ):
-
-                        for index, source in enumerate(
-                            sources,
-                            start=1,
-                        ):
-
-                            distance = source.get(
-                                "distance"
-                            )
-
-                            st.markdown(
-                                f"#### Source {index}"
-                            )
-
-                            col1, col2, col3 = (
-                                st.columns(3)
-                            )
-
-                            with col1:
-
-                                st.caption(
-                                    "Page"
-                                )
-
-                                st.write(
-                                    source.get(
-                                        "page_number",
-                                        "N/A",
-                                    )
-                                )
-
-                            with col2:
-
-                                st.caption(
-                                    "Chunk"
-                                )
-
-                                st.write(
-                                    source.get(
-                                        "chunk_index",
-                                        "N/A",
-                                    )
-                                )
-
-                            with col3:
-
-                                st.caption(
-                                    "Distance"
-                                )
-
-                                if distance is not None:
-
-                                    st.write(
-                                        f"{distance:.4f}"
-                                    )
-
-                                else:
-
-                                    st.write(
-                                        "N/A"
-                                    )
-
-                            st.caption(
-                                source.get(
-                                    "document_name",
-                                    "Unknown document",
-                                )
-                            )
-
-                            st.write(
-                                source.get(
-                                    "text",
-                                    "",
-                                )
-                            )
-
-                            st.divider()
+                    render_sources(
+                        sources
+                    )
 
                 else:
 
                     st.info(
-                        "No document chunks passed "
-                        "the relevance threshold."
+                        "No sufficiently relevant document "
+                        "context was found."
                     )
+
+                # ------------------------------------------------
+                # Save assistant response
+                # ------------------------------------------------
 
                 st.session_state.messages.append(
                     {
@@ -770,5 +791,5 @@ st.divider()
 
 st.caption(
     "Built with Python • Streamlit • FastAPI • OpenAI • "
-    "Weaviate • Retrieval-Augmented Generation"
+    "Weaviate • Hybrid Retrieval-Augmented Generation"
 )
