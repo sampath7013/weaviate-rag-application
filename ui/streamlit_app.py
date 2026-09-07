@@ -8,17 +8,20 @@ import streamlit as st
 
 
 # ============================================================
-# Project root setup
+# Project root
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+    sys.path.insert(
+        0,
+        str(PROJECT_ROOT),
+    )
 
 
 # ============================================================
-# Streamlit page configuration
+# Page configuration
 # ============================================================
 
 st.set_page_config(
@@ -64,6 +67,7 @@ st.markdown(
         background-color: rgba(100, 116, 139, 0.08);
         margin-top: 0.5rem;
         margin-bottom: 1rem;
+        line-height: 1.7;
     }
 
     </style>
@@ -77,6 +81,7 @@ st.markdown(
 # ============================================================
 
 def load_streamlit_secrets() -> None:
+
     secret_names = [
         "APP_ENV",
         "OPENAI_API_KEY",
@@ -91,11 +96,18 @@ def load_streamlit_secrets() -> None:
     ]
 
     for secret_name in secret_names:
+
         try:
-            value = st.secrets.get(secret_name)
+
+            value = st.secrets.get(
+                secret_name
+            )
 
             if value is not None:
-                os.environ[secret_name] = str(value)
+
+                os.environ[
+                    secret_name
+                ] = str(value)
 
         except Exception:
             pass
@@ -105,7 +117,7 @@ load_streamlit_secrets()
 
 
 # ============================================================
-# Import application logic
+# Application imports
 # ============================================================
 
 from app.generation.rag_chain import ask_rag
@@ -123,9 +135,13 @@ defaults = {
     "messages": [],
     "pages": None,
     "chunks": None,
+    "processing_message": None,
+    "processing_message_type": None,
 }
 
+
 for key, value in defaults.items():
+
     if key not in st.session_state:
         st.session_state[key] = value
 
@@ -136,13 +152,18 @@ for key, value in defaults.items():
 
 with st.sidebar:
 
-    st.header("📄 Document")
+    st.header(
+        "📄 Document"
+    )
 
     uploaded_file = st.file_uploader(
         "Upload a PDF",
         type=["pdf"],
         accept_multiple_files=False,
-        help="Upload a PDF to build a searchable knowledge base.",
+        help=(
+            "Upload a PDF to build a searchable "
+            "knowledge base."
+        ),
     )
 
     process_document = st.button(
@@ -154,11 +175,14 @@ with st.sidebar:
 
     st.divider()
 
-    # --------------------------------------------------------
-    # Retrieval settings
-    # --------------------------------------------------------
 
-    st.subheader("Retrieval Settings")
+    # ========================================================
+    # Retrieval settings
+    # ========================================================
+
+    st.subheader(
+        "Retrieval Settings"
+    )
 
     top_k = st.slider(
         "Top K chunks",
@@ -179,9 +203,9 @@ with st.sidebar:
         value=0.50,
         step=0.05,
         help=(
-            "Controls hybrid search. "
-            "0 = keyword/BM25 only, "
-            "1 = semantic/vector only. "
+            "Controls hybrid retrieval. "
+            "0 = BM25 keyword search, "
+            "1 = semantic vector search. "
             "0.50 gives equal weight to both."
         ),
     )
@@ -200,26 +224,45 @@ with st.sidebar:
 
     st.divider()
 
-    # --------------------------------------------------------
-    # Current document
-    # --------------------------------------------------------
 
-    st.subheader("Current Document")
+    # ========================================================
+    # Current document
+    # ========================================================
+
+    st.subheader(
+        "Current Document"
+    )
 
     if st.session_state.document_ready:
 
-        st.success("Ready")
+        st.success(
+            "Ready"
+        )
+
+        pages_display = (
+            st.session_state.pages
+            if st.session_state.pages is not None
+            else "N/A"
+        )
+
+        chunks_display = (
+            st.session_state.chunks
+            if st.session_state.chunks is not None
+            else "N/A"
+        )
+
+        # Keep HTML left aligned so Streamlit does not
+        # interpret the indentation as a code block.
+        document_card = (
+            '<div class="document-card">'
+            f'<strong>{st.session_state.document_name}</strong><br>'
+            f'Pages: {pages_display}<br>'
+            f'Chunks: {chunks_display}'
+            '</div>'
+        )
 
         st.markdown(
-            f"""
-            <div class="document-card">
-                <strong>{st.session_state.document_name}</strong>
-                <br>
-                Pages: {st.session_state.pages or "N/A"}
-                <br>
-                Chunks: {st.session_state.chunks or "N/A"}
-            </div>
-            """,
+            document_card,
             unsafe_allow_html=True,
         )
 
@@ -227,32 +270,42 @@ with st.sidebar:
             "Clear Document",
             use_container_width=True,
         ):
+
             st.session_state.document_id = None
             st.session_state.document_name = None
             st.session_state.document_ready = False
+
             st.session_state.messages = []
+
             st.session_state.pages = None
             st.session_state.chunks = None
+
+            st.session_state.processing_message = None
+            st.session_state.processing_message_type = None
 
             st.rerun()
 
     else:
+
         st.info(
             "Upload and process a PDF to begin."
         )
 
     st.divider()
 
-    # --------------------------------------------------------
-    # About project
-    # --------------------------------------------------------
 
-    with st.expander("About this project"):
+    # ========================================================
+    # About project
+    # ========================================================
+
+    with st.expander(
+        "About this project"
+    ):
 
         st.write(
-            "A production-style Retrieval-Augmented Generation "
-            "application combining semantic vector search and "
-            "BM25 keyword search."
+            "A production-style Retrieval-Augmented "
+            "Generation application combining semantic "
+            "vector search and BM25 keyword search."
         )
 
         st.markdown(
@@ -278,15 +331,19 @@ with st.sidebar:
 # ============================================================
 
 st.markdown(
-    '<div class="main-title">📚 Document RAG Assistant</div>',
+    (
+        '<div class="main-title">'
+        '📚 Document RAG Assistant'
+        '</div>'
+    ),
     unsafe_allow_html=True,
 )
 
 st.markdown(
     """
     <div class="subtitle">
-        Upload a PDF and ask questions grounded only in the
-        document content.
+        Upload a PDF and ask questions grounded only
+        in the document content.
     </div>
     """,
     unsafe_allow_html=True,
@@ -313,12 +370,42 @@ st.divider()
 
 
 # ============================================================
+# Processing result / flash message
+# ============================================================
+
+if st.session_state.processing_message:
+
+    if (
+        st.session_state.processing_message_type
+        == "success"
+    ):
+
+        st.success(
+            st.session_state.processing_message
+        )
+
+    else:
+
+        st.info(
+            st.session_state.processing_message
+        )
+
+    st.session_state.processing_message = None
+    st.session_state.processing_message_type = None
+
+
+# ============================================================
 # PDF ingestion
 # ============================================================
 
-if process_document and uploaded_file is not None:
+if (
+    process_document
+    and uploaded_file is not None
+):
 
-    document_id = str(uuid.uuid4())
+    document_id = str(
+        uuid.uuid4()
+    )
 
     original_filename = Path(
         uploaded_file.name
@@ -350,7 +437,10 @@ if process_document and uploaded_file is not None:
                     uploaded_file.getbuffer()
                 )
 
-                temporary_path = temporary_file.name
+                temporary_path = (
+                    temporary_file.name
+                )
+
 
             st.write(
                 "Checking for duplicate document..."
@@ -368,11 +458,17 @@ if process_document and uploaded_file is not None:
                 "Indexing vectors in Weaviate..."
             )
 
+
             result = ingest_pdf(
                 file_path=temporary_path,
                 document_id=document_id,
                 document_name=original_filename,
             )
+
+
+            # =================================================
+            # Store document state
+            # =================================================
 
             st.session_state.document_id = (
                 result["document_id"]
@@ -387,18 +483,26 @@ if process_document and uploaded_file is not None:
             st.session_state.messages = []
 
             st.session_state.pages = (
-                result.get("pages")
+                result.get(
+                    "pages"
+                )
             )
 
             st.session_state.chunks = (
-                result.get("chunks")
+                result.get(
+                    "chunks"
+                )
             )
 
-            # ------------------------------------------------
-            # Duplicate document
-            # ------------------------------------------------
 
-            if result["duplicate"]:
+            # =================================================
+            # Duplicate document
+            # =================================================
+
+            if result.get(
+                "duplicate",
+                False,
+            ):
 
                 status.update(
                     label=(
@@ -409,14 +513,19 @@ if process_document and uploaded_file is not None:
                     expanded=False,
                 )
 
-                st.info(
-                    "This PDF already exists in the knowledge base. "
-                    "The existing index was reused."
+                st.session_state.processing_message = (
+                    "Document already indexed — "
+                    "using existing vectors."
                 )
 
-            # ------------------------------------------------
+                st.session_state.processing_message_type = (
+                    "info"
+                )
+
+
+            # =================================================
             # New document
-            # ------------------------------------------------
+            # =================================================
 
             else:
 
@@ -428,10 +537,22 @@ if process_document and uploaded_file is not None:
                     expanded=False,
                 )
 
-                st.success(
+                st.session_state.processing_message = (
                     f"Indexed {result['pages']} pages "
                     f"into {result['chunks']} chunks."
                 )
+
+                st.session_state.processing_message_type = (
+                    "success"
+                )
+
+
+        # =====================================================
+        # Rerun so sidebar immediately reflects new state
+        # =====================================================
+
+        st.rerun()
+
 
     except Exception:
 
@@ -442,12 +563,16 @@ if process_document and uploaded_file is not None:
             "Please try again."
         )
 
+
     finally:
 
         if (
             temporary_path
-            and Path(temporary_path).exists()
+            and Path(
+                temporary_path
+            ).exists()
         ):
+
             Path(
                 temporary_path
             ).unlink()
@@ -463,7 +588,9 @@ if not st.session_state.document_ready:
         "How it works"
     )
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3 = (
+        st.columns(3)
+    )
 
     with col1:
 
@@ -475,6 +602,7 @@ if not st.session_state.document_ready:
             "Upload a PDF from the sidebar."
         )
 
+
     with col2:
 
         st.markdown(
@@ -483,8 +611,9 @@ if not st.session_state.document_ready:
 
         st.write(
             "The document is chunked, embedded, "
-            "and stored in Weaviate."
+            "and indexed in Weaviate."
         )
+
 
     with col3:
 
@@ -493,8 +622,9 @@ if not st.session_state.document_ready:
         )
 
         st.write(
-            "Ask natural-language questions and "
-            "receive grounded answers with sources."
+            "Ask natural-language questions "
+            "and receive grounded answers "
+            "with source citations."
         )
 
     st.info(
@@ -515,17 +645,19 @@ else:
     if not st.session_state.messages:
 
         st.info(
-            "Try asking a question about the uploaded PDF."
+            "Try asking a question about "
+            "the uploaded PDF."
         )
 
         st.caption(
             "Example: "
-            "“Summarize the main points of this document.”"
+            "“Summarize the main points "
+            "of this document.”"
         )
 
 
 # ============================================================
-# Source rendering helper
+# Source renderer
 # ============================================================
 
 def render_sources(
@@ -552,6 +684,7 @@ def render_sources(
                 st.columns(3)
             )
 
+
             with col1:
 
                 st.caption(
@@ -565,6 +698,7 @@ def render_sources(
                     )
                 )
 
+
             with col2:
 
                 st.caption(
@@ -577,6 +711,7 @@ def render_sources(
                         "N/A",
                     )
                 )
+
 
             with col3:
 
@@ -600,6 +735,7 @@ def render_sources(
                         "N/A"
                     )
 
+
             st.caption(
                 source.get(
                     "document_name",
@@ -618,26 +754,34 @@ def render_sources(
 
 
 # ============================================================
-# Render previous conversation
+# Render existing conversation
 # ============================================================
 
 for message in st.session_state.messages:
 
     with st.chat_message(
-        message["role"]
+        message[
+            "role"
+        ]
     ):
 
         st.markdown(
-            message["content"]
+            message[
+                "content"
+            ]
         )
 
         if (
             message["role"] == "assistant"
-            and message.get("sources")
+            and message.get(
+                "sources"
+            )
         ):
 
             render_sources(
-                message["sources"]
+                message[
+                    "sources"
+                ]
             )
 
 
@@ -651,34 +795,38 @@ question = st.chat_input(
         if st.session_state.document_ready
         else "Upload a document first..."
     ),
-    disabled=not st.session_state.document_ready,
+    disabled=(
+        not st.session_state.document_ready
+    ),
 )
 
 
 # ============================================================
-# Handle RAG question
+# Process question
 # ============================================================
 
 if question:
 
-    cleaned_question = question.strip()
+    cleaned_question = (
+        question.strip()
+    )
 
     if cleaned_question:
 
-        # ----------------------------------------------------
-        # Store user message
-        # ----------------------------------------------------
-
         st.session_state.messages.append(
             {
-                "role": "user",
-                "content": cleaned_question,
+                "role":
+                    "user",
+
+                "content":
+                    cleaned_question,
             }
         )
 
-        # ----------------------------------------------------
-        # Display user message
-        # ----------------------------------------------------
+
+        # ====================================================
+        # User message
+        # ====================================================
 
         with st.chat_message(
             "user"
@@ -688,9 +836,10 @@ if question:
                 cleaned_question
             )
 
-        # ----------------------------------------------------
-        # Generate assistant response
-        # ----------------------------------------------------
+
+        # ====================================================
+        # Assistant response
+        # ====================================================
 
         with st.chat_message(
             "assistant"
@@ -712,12 +861,13 @@ if question:
                         min_score=min_score,
                     )
 
+
                 answer = result.get(
                     "answer",
                     (
-                        "The available document does not contain "
-                        "enough relevant information to answer "
-                        "this question."
+                        "The available document does not "
+                        "contain enough relevant information "
+                        "to answer this question."
                     ),
                 )
 
@@ -726,17 +876,15 @@ if question:
                     [],
                 )
 
-                # ------------------------------------------------
-                # Display answer
-                # ------------------------------------------------
 
                 st.markdown(
                     answer
                 )
 
-                # ------------------------------------------------
-                # Display sources
-                # ------------------------------------------------
+
+                # =================================================
+                # Sources
+                # =================================================
 
                 if sources:
 
@@ -747,21 +895,28 @@ if question:
                 else:
 
                     st.info(
-                        "No sufficiently relevant document "
-                        "context was found."
+                        "No sufficiently relevant "
+                        "document context was found."
                     )
 
-                # ------------------------------------------------
+
+                # =================================================
                 # Save assistant response
-                # ------------------------------------------------
+                # =================================================
 
                 st.session_state.messages.append(
                     {
-                        "role": "assistant",
-                        "content": answer,
-                        "sources": sources,
+                        "role":
+                            "assistant",
+
+                        "content":
+                            answer,
+
+                        "sources":
+                            sources,
                     }
                 )
+
 
             except Exception:
 
@@ -776,9 +931,14 @@ if question:
 
                 st.session_state.messages.append(
                     {
-                        "role": "assistant",
-                        "content": error_message,
-                        "sources": [],
+                        "role":
+                            "assistant",
+
+                        "content":
+                            error_message,
+
+                        "sources":
+                            [],
                     }
                 )
 

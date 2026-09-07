@@ -4,11 +4,7 @@ import logging
 from weaviate.classes.query import Filter
 
 from app.config import settings
-
-from app.generation.llm import (
-    create_embeddings,
-)
-
+from app.generation.llm import create_embeddings
 from app.ingestion.loaders import load_pdf
 from app.ingestion.chunking import chunk_pages
 from app.ingestion.file_utils import calculate_file_hash
@@ -23,47 +19,93 @@ from app.retrieval.weaviate_client import (
 logger = logging.getLogger(__name__)
 
 
+# ============================================================
+# Find existing document
+# ============================================================
+
 def find_existing_document(
     collection,
     file_hash: str,
 ) -> dict | None:
+    """
+    Find an already indexed document using its SHA-256 hash.
+
+    Returns metadata for duplicate documents so Streamlit
+    can still display:
+    - document_id
+    - filename
+    - pages
+    - chunks
+    """
 
     response = collection.query.fetch_objects(
         filters=Filter.by_property(
             "file_hash"
         ).equal(file_hash),
-        limit=1,
+        limit=1000,
     )
 
     if not response.objects:
         return None
 
-    properties = response.objects[
-        0
-    ].properties
+    first_object = response.objects[0]
+    properties = first_object.properties
 
-    return {
-        "document_id":
-            properties.get(
-                "document_id"
-            ),
-
-        "filename":
-            properties.get(
-                "document_name"
-            ),
+    page_numbers = {
+        obj.properties.get("page_number")
+        for obj in response.objects
+        if obj.properties.get("page_number") is not None
     }
 
+    return {
+        "document_id": properties.get(
+            "document_id"
+        ),
+
+        "filename": properties.get(
+            "document_name"
+        ),
+
+        "pages": (
+            len(page_numbers)
+            if page_numbers
+            else None
+        ),
+
+        "chunks": len(
+            response.objects
+        ),
+    }
+
+
+# ============================================================
+# PDF ingestion
+# ============================================================
 
 def ingest_pdf(
     file_path: str,
     document_id: str,
     document_name: str | None = None,
 ) -> dict:
+    """
+    Ingest a PDF into Weaviate.
 
-    path = Path(
-        file_path
-    )
+    Pipeline:
+
+    PDF
+      ↓
+    SHA-256 duplicate detection
+      ↓
+    PDF text extraction
+      ↓
+    Chunking
+      ↓
+    Batch OpenAI embeddings
+      ↓
+    Batch Weaviate insertion
+    """
+
+    path = Path(file_path)
 
     if not path.exists():
         raise FileNotFoundError(
@@ -77,24 +119,43 @@ def ingest_pdf(
     )
 
     logger.info(
-        "ingestion_started | document_id=%s | filename=%s",
+        (
+            "ingestion_started | "
+            "document_id=%s | "
+            "filename=%s"
+        ),
         document_id,
         display_name,
     )
+
+
+    # ========================================================
+    # Calculate SHA-256
+    # ========================================================
 
     file_hash = calculate_file_hash(
         file_path
     )
 
     logger.info(
-        "file_hash_created | document_id=%s | hash=%s",
+        (
+            "file_hash_created | "
+            "document_id=%s | "
+            "hash=%s"
+        ),
         document_id,
         file_hash,
     )
 
+
+    # ========================================================
+    # Connect to Weaviate
+    # ========================================================
+
     client = get_weaviate_client()
 
     try:
+
         create_collection(
             client
         )
@@ -107,6 +168,11 @@ def ingest_pdf(
             settings.weaviate_collection
         )
 
+
+        # ====================================================
+        # Duplicate detection
+        # ====================================================
+
         existing_document = (
             find_existing_document(
                 collection=collection,
@@ -117,9 +183,23 @@ def ingest_pdf(
         if existing_document:
 
             logger.info(
-                "duplicate_detected | document_id=%s | existing_document_id=%s",
+                (
+                    "duplicate_detected | "
+                    "new_document_id=%s | "
+                    "existing_document_id=%s | "
+                    "pages=%s | "
+                    "chunks=%s"
+                ),
                 document_id,
-                existing_document["document_id"],
+                existing_document[
+                    "document_id"
+                ],
+                existing_document[
+                    "pages"
+                ],
+                existing_document[
+                    "chunks"
+                ],
             )
 
             return {
@@ -134,10 +214,14 @@ def ingest_pdf(
                     ],
 
                 "pages":
-                    None,
+                    existing_document[
+                        "pages"
+                    ],
 
                 "chunks":
-                    None,
+                    existing_document[
+                        "chunks"
+                    ],
 
                 "file_hash":
                     file_hash,
@@ -145,6 +229,11 @@ def ingest_pdf(
                 "duplicate":
                     True,
             }
+
+
+        # ====================================================
+        # Load PDF
+        # ====================================================
 
         pages = load_pdf(
             file_path
@@ -156,15 +245,26 @@ def ingest_pdf(
             )
 
         logger.info(
-            "pdf_loaded | document_id=%s | pages=%s",
+            (
+                "pdf_loaded | "
+                "document_id=%s | "
+                "pages=%s"
+            ),
             document_id,
             len(pages),
         )
 
+
+        # Preserve the original filename.
         for page in pages:
             page[
                 "document_name"
             ] = display_name
+
+
+        # ====================================================
+        # Chunk PDF
+        # ====================================================
 
         chunks = chunk_pages(
             pages
@@ -176,18 +276,36 @@ def ingest_pdf(
             )
 
         logger.info(
-            "chunks_created | document_id=%s | chunks=%s",
+            (
+                "chunks_created | "
+                "document_id=%s | "
+                "chunks=%s"
+            ),
             document_id,
             len(chunks),
         )
+
+
+        # ====================================================
+        # Prepare texts for embedding
+        # ====================================================
 
         texts = [
             chunk["text"]
             for chunk in chunks
         ]
 
+
+        # ====================================================
+        # Batch embeddings
+        # ====================================================
+
         logger.info(
-            "embedding_started | document_id=%s | chunks=%s",
+            (
+                "embedding_started | "
+                "document_id=%s | "
+                "chunks=%s"
+            ),
             document_id,
             len(texts),
         )
@@ -199,17 +317,29 @@ def ingest_pdf(
         if len(embeddings) != len(chunks):
             raise RuntimeError(
                 "Embedding count does not match "
-                "the number of chunks."
+                "the number of document chunks."
             )
 
         logger.info(
-            "embedding_completed | document_id=%s | embeddings=%s",
+            (
+                "embedding_completed | "
+                "document_id=%s | "
+                "embeddings=%s"
+            ),
             document_id,
             len(embeddings),
         )
 
+
+        # ====================================================
+        # Batch insertion into Weaviate
+        # ====================================================
+
         logger.info(
-            "weaviate_batch_started | document_id=%s",
+            (
+                "weaviate_batch_started | "
+                "document_id=%s"
+            ),
             document_id,
         )
 
@@ -247,19 +377,42 @@ def ingest_pdf(
                     vector=embedding,
                 )
 
+
+        # ====================================================
+        # Batch failure handling
+        # ====================================================
+
         failed_objects = (
             collection.batch.failed_objects
         )
 
         if failed_objects:
 
-            raise RuntimeError(
-                "Weaviate batch ingestion failed "
-                f"for {len(failed_objects)} object(s)."
+            first_failure = (
+                failed_objects[0]
             )
 
+            raise RuntimeError(
+                (
+                    "Weaviate batch ingestion failed "
+                    f"for {len(failed_objects)} "
+                    "object(s). "
+                    f"First failure: {first_failure}"
+                )
+            )
+
+
+        # ====================================================
+        # Success
+        # ====================================================
+
         logger.info(
-            "ingestion_completed | document_id=%s | pages=%s | chunks=%s",
+            (
+                "ingestion_completed | "
+                "document_id=%s | "
+                "pages=%s | "
+                "chunks=%s"
+            ),
             document_id,
             len(pages),
             len(chunks),
@@ -285,15 +438,21 @@ def ingest_pdf(
                 False,
         }
 
+
     except Exception:
 
         logger.exception(
-            "ingestion_failed | document_id=%s | filename=%s",
+            (
+                "ingestion_failed | "
+                "document_id=%s | "
+                "filename=%s"
+            ),
             document_id,
             display_name,
         )
 
         raise
+
 
     finally:
 
