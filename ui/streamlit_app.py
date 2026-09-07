@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import tempfile
@@ -30,6 +31,13 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+# ============================================================
+# Logging
+# ============================================================
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -251,8 +259,6 @@ with st.sidebar:
             else "N/A"
         )
 
-        # Keep HTML left aligned so Streamlit does not
-        # interpret the indentation as a code block.
         document_card = (
             '<div class="document-card">'
             f'<strong>{st.session_state.document_name}</strong><br>'
@@ -547,14 +553,15 @@ if (
                 )
 
 
-        # =====================================================
-        # Rerun so sidebar immediately reflects new state
-        # =====================================================
-
         st.rerun()
 
 
     except Exception:
+
+        logger.exception(
+            "document_ingestion_failed | filename=%s",
+            original_filename,
+        )
 
         st.session_state.document_ready = False
 
@@ -919,6 +926,16 @@ if question:
 
 
             except Exception:
+
+                logger.exception(
+                    (
+                        "rag_query_failed | "
+                        "document_id=%s | "
+                        "question=%s"
+                    ),
+                    st.session_state.document_id,
+                    cleaned_question,
+                )
 
                 error_message = (
                     "I couldn't process that question. "
