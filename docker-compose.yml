@@ -1,6 +1,7 @@
 services:
   weaviate:
     image: cr.weaviate.io/semitechnologies/weaviate:1.39.2
+    container_name: rag-weaviate
 
     ports:
       - "8080:8080"
@@ -9,13 +10,81 @@ services:
     volumes:
       - weaviate_data:/var/lib/weaviate
 
-    restart: on-failure:0
+    restart: unless-stopped
 
     environment:
-      QUERY_DEFAULTS_LIMIT: 25
+      QUERY_DEFAULTS_LIMIT: "25"
       AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
       PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
       CLUSTER_HOSTNAME: "node1"
 
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+
+    container_name: rag-api
+
+    ports:
+      - "8000:8000"
+
+    restart: unless-stopped
+
+    depends_on:
+      - weaviate
+
+    environment:
+      APP_ENV: "local"
+
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+
+      WEAVIATE_HOST: "weaviate"
+      WEAVIATE_HTTP_PORT: "8080"
+      WEAVIATE_GRPC_PORT: "50051"
+
+      WEAVIATE_COLLECTION: "${WEAVIATE_COLLECTION:-DocumentChunk}"
+
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-text-embedding-3-small}"
+      LLM_MODEL: "${LLM_MODEL:-gpt-5.6-luna}"
+
+    volumes:
+      - uploads_data:/app/data/uploads
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+
+    container_name: rag-streamlit
+
+    ports:
+      - "8501:8501"
+
+    restart: unless-stopped
+
+    depends_on:
+      - weaviate
+      - api
+
+    environment:
+      APP_ENV: "local"
+
+      API_BASE_URL: "http://api:8000"
+
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+
+      WEAVIATE_HOST: "weaviate"
+      WEAVIATE_HTTP_PORT: "8080"
+      WEAVIATE_GRPC_PORT: "50051"
+
+      WEAVIATE_COLLECTION: "${WEAVIATE_COLLECTION:-DocumentChunk}"
+
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-text-embedding-3-small}"
+      LLM_MODEL: "${LLM_MODEL:-gpt-5.6-luna}"
+
+    volumes:
+      - uploads_data:/app/data/uploads
+
 volumes:
   weaviate_data:
+  uploads_data:

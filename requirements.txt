@@ -1,14 +1,11 @@
 openai==3.8.0
 weaviate-client==4.23.0
-
 fastapi==0.141.1
 uvicorn[standard]==0.52.4
-
 streamlit==1.63.0
-
 python-dotenv==1.2.3
 pydantic==2.13.5
 pydantic-settings==2.15.0
-
 pymupdf==1.28.2
 python-multipart==0.0.32
+requests==2.34.2

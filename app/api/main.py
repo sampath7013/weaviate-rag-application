@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
 from pathlib import Path
 import logging
 import shutil
@@ -13,11 +16,15 @@ from fastapi import (
 from pydantic import (
     BaseModel,
     Field,
+    model_validator,
 )
 
 from app.generation.rag_chain import ask_rag
 from app.ingestion.ingest import ingest_pdf
 from app.logging_config import configure_logging
+from app.retrieval.weaviate_client import (
+    close_shared_weaviate_client,
+)
 
 
 # ============================================================
@@ -30,6 +37,44 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
+# FastAPI lifespan
+# ============================================================
+
+@asynccontextmanager
+async def lifespan(
+    app: FastAPI,
+):
+    """
+    Manage process-level application resources.
+
+    The shared Weaviate retrieval client is created lazily
+    when the first retrieval request is made.
+
+    On application shutdown, the shared Weaviate connection
+    is closed cleanly.
+    """
+
+    logger.info(
+        "fastapi_application_started"
+    )
+
+    try:
+        yield
+
+    finally:
+
+        logger.info(
+            "fastapi_application_shutting_down"
+        )
+
+        close_shared_weaviate_client()
+
+        logger.info(
+            "fastapi_application_stopped"
+        )
+
+
+# ============================================================
 # FastAPI application
 # ============================================================
 
@@ -39,7 +84,8 @@ app = FastAPI(
         "Production-style Retrieval-Augmented Generation "
         "application using OpenAI and Weaviate."
     ),
-    version="1.0.0",
+    version="1.2.0",
+    lifespan=lifespan,
 )
 
 
@@ -47,7 +93,9 @@ app = FastAPI(
 # Upload directory
 # ============================================================
 
-UPLOAD_DIR = Path("data/uploads")
+UPLOAD_DIR = Path(
+    "data/uploads"
+)
 
 UPLOAD_DIR.mkdir(
     parents=True,
@@ -59,7 +107,9 @@ UPLOAD_DIR.mkdir(
 # Request model
 # ============================================================
 
-class QueryRequest(BaseModel):
+class QueryRequest(
+    BaseModel,
+):
 
     question: str = Field(
         min_length=1,
@@ -87,6 +137,26 @@ class QueryRequest(BaseModel):
         ),
     )
 
+    page_start: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Optional first page of the retrieval range. "
+            "If provided, chunks before this page "
+            "are excluded."
+        ),
+    )
+
+    page_end: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Optional last page of the retrieval range. "
+            "If provided, chunks after this page "
+            "are excluded."
+        ),
+    )
+
     alpha: float = Field(
         default=0.50,
         ge=0.0,
@@ -108,6 +178,45 @@ class QueryRequest(BaseModel):
         ),
     )
 
+    rerank: bool = Field(
+        default=False,
+        description=(
+            "Whether to apply the experimental reranker "
+            "after retrieval."
+        ),
+    )
+
+    candidate_k: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description=(
+            "Number of retrieval candidates to consider "
+            "before reranking. Used only when rerank=true."
+        ),
+    )
+
+    @model_validator(
+        mode="after"
+    )
+    def validate_page_range(
+        self,
+    ) -> "QueryRequest":
+        """
+        Validate relationships between page filters.
+        """
+
+        if (
+            self.page_start is not None
+            and self.page_end is not None
+            and self.page_start > self.page_end
+        ):
+            raise ValueError(
+                "page_start cannot be greater than page_end."
+            )
+
+        return self
+
 
 # ============================================================
 # Root endpoint
@@ -117,7 +226,10 @@ class QueryRequest(BaseModel):
 def root():
 
     return {
-        "message": "Weaviate RAG API is running"
+        "message": (
+            "Weaviate RAG API is running"
+        ),
+        "version": "1.2.0",
     }
 
 
@@ -146,12 +258,20 @@ def ask(
         (
             "ask_request | "
             "document_id=%s | "
+            "page_start=%s | "
+            "page_end=%s | "
             "top_k=%s | "
+            "candidate_k=%s | "
+            "rerank=%s | "
             "alpha=%s | "
             "min_score=%s"
         ),
         request.document_id,
+        request.page_start,
+        request.page_end,
         request.top_k,
+        request.candidate_k,
+        request.rerank,
         request.alpha,
         request.min_score,
     )
@@ -162,35 +282,122 @@ def ask(
             question=request.question,
             top_k=request.top_k,
             document_id=request.document_id,
+            page_start=request.page_start,
+            page_end=request.page_end,
             alpha=request.alpha,
             min_score=request.min_score,
+            rerank=request.rerank,
+            candidate_k=request.candidate_k,
+        )
+
+        trace = result.get(
+            "trace",
+            {},
+        )
+
+        metadata = trace.get(
+            "metadata",
+            {},
         )
 
         logger.info(
             (
                 "ask_completed | "
                 "document_id=%s | "
-                "sources=%s"
+                "page_start=%s | "
+                "page_end=%s | "
+                "sources=%s | "
+                "reranked=%s | "
+                "request_id=%s | "
+                "total_duration_ms=%s"
             ),
             request.document_id,
+            request.page_start,
+            request.page_end,
             len(
                 result.get(
                     "sources",
                     [],
                 )
             ),
+            result.get(
+                "reranked"
+            ),
+            trace.get(
+                "request_id"
+            ),
+            trace.get(
+                "total_duration_ms"
+            ),
+        )
+
+        logger.info(
+            (
+                "ask_trace_summary | "
+                "page_filtered=%s | "
+                "retrieved_pages=%s | "
+                "embedding_cache_hit=%s | "
+                "relevance_gate_called=%s | "
+                "relevant=%s | "
+                "fallback_reason=%s"
+            ),
+            metadata.get(
+                "retrieval_page_filtered"
+            ),
+            metadata.get(
+                "retrieved_pages"
+            ),
+            metadata.get(
+                "embedding_cache_hit"
+            ),
+            metadata.get(
+                "relevance_gate_called"
+            ),
+            metadata.get(
+                "relevant"
+            ),
+            metadata.get(
+                "fallback_reason"
+            ),
         )
 
         return result
+
+    except ValueError as error:
+
+        logger.warning(
+            (
+                "ask_validation_failed | "
+                "document_id=%s | "
+                "page_start=%s | "
+                "page_end=%s | "
+                "error=%s"
+            ),
+            request.document_id,
+            request.page_start,
+            request.page_end,
+            error,
+        )
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                error
+            ),
+        )
 
     except Exception:
 
         logger.exception(
             (
                 "ask_failed | "
-                "document_id=%s"
+                "document_id=%s | "
+                "page_start=%s | "
+                "page_end=%s"
             ),
             request.document_id,
+            request.page_start,
+            request.page_end,
         )
 
         raise HTTPException(
@@ -206,7 +413,9 @@ def ask(
 # Upload endpoint
 # ============================================================
 
-@app.post("/documents/upload")
+@app.post(
+    "/documents/upload"
+)
 async def upload_document(
     file: UploadFile = File(...),
 ):
@@ -219,16 +428,18 @@ async def upload_document(
 
         raise HTTPException(
             status_code=400,
-            detail="File name is missing",
+            detail=(
+                "File name is missing"
+            ),
         )
 
     # Prevent path traversal such as:
+    #
     # ../../malicious.pdf
 
     original_filename = Path(
         file.filename
     ).name
-
 
     # --------------------------------------------------------
     # Validate PDF extension
@@ -245,7 +456,6 @@ async def upload_document(
             ),
         )
 
-
     # --------------------------------------------------------
     # Generate unique document ID
     # --------------------------------------------------------
@@ -253,7 +463,6 @@ async def upload_document(
     document_id = str(
         uuid.uuid4()
     )
-
 
     # --------------------------------------------------------
     # Create local storage filename
@@ -264,10 +473,9 @@ async def upload_document(
     )
 
     file_path = (
-        UPLOAD_DIR /
-        stored_filename
+        UPLOAD_DIR
+        / stored_filename
     )
-
 
     logger.info(
         (
@@ -278,7 +486,6 @@ async def upload_document(
         document_id,
         original_filename,
     )
-
 
     try:
 
@@ -295,7 +502,6 @@ async def upload_document(
                 buffer,
             )
 
-
         # ----------------------------------------------------
         # Ingest PDF
         # ----------------------------------------------------
@@ -308,7 +514,6 @@ async def upload_document(
             document_name=original_filename,
         )
 
-
         # ----------------------------------------------------
         # Duplicate document
         # ----------------------------------------------------
@@ -317,10 +522,10 @@ async def upload_document(
             "duplicate"
         ]:
 
-            # Remove unnecessary duplicate
-            # physical file.
+            # Remove unnecessary duplicate physical file.
 
             if file_path.exists():
+
                 file_path.unlink()
 
             logger.info(
@@ -338,23 +543,36 @@ async def upload_document(
             )
 
             return {
-                "message":
-                    "Document already exists",
+                "message": (
+                    "Document already exists"
+                ),
 
-                "document_id":
+                "document_id": (
                     ingestion_result[
                         "document_id"
-                    ],
+                    ]
+                ),
 
-                "filename":
+                "filename": (
                     ingestion_result[
                         "filename"
-                    ],
+                    ]
+                ),
 
-                "duplicate":
-                    True,
+                "pages": (
+                    ingestion_result.get(
+                        "pages"
+                    )
+                ),
+
+                "chunks": (
+                    ingestion_result.get(
+                        "chunks"
+                    )
+                ),
+
+                "duplicate": True,
             }
-
 
         # ----------------------------------------------------
         # Successful ingestion
@@ -383,38 +601,40 @@ async def upload_document(
         )
 
         return {
-            "message":
-                "Document ingested successfully",
+            "message": (
+                "Document ingested successfully"
+            ),
 
-            "document_id":
+            "document_id": (
                 ingestion_result[
                     "document_id"
-                ],
+                ]
+            ),
 
-            "filename":
+            "filename": (
                 ingestion_result[
                     "filename"
-                ],
+                ]
+            ),
 
-            "pages":
+            "pages": (
                 ingestion_result[
                     "pages"
-                ],
+                ]
+            ),
 
-            "chunks":
+            "chunks": (
                 ingestion_result[
                     "chunks"
-                ],
+                ]
+            ),
 
-            "duplicate":
-                False,
+            "duplicate": False,
         }
-
 
     except HTTPException:
 
         raise
-
 
     except Exception:
 
@@ -433,6 +653,7 @@ async def upload_document(
         # ----------------------------------------------------
 
         if file_path.exists():
+
             file_path.unlink()
 
         raise HTTPException(
@@ -442,7 +663,6 @@ async def upload_document(
                 "at this time."
             ),
         )
-
 
     finally:
 

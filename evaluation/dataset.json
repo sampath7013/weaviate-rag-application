@@ -1,0 +1,78 @@
+[
+  {
+    "id": "q1",
+    "question": "What is Project Atlas designed to do?",
+    "answerable": true,
+    "expected_pages": [
+      1
+    ],
+    "expected_answer": "Project Atlas is designed to help engineers search technical manuals, maintenance procedures, quality documents, and project notes using retrieval-augmented generation. Answers are grounded in retrieved document passages rather than unsupported assumptions.",
+    "document_id": "04e06dd1-5139-4c32-bde9-1b40392e6fcd"
+  },
+  {
+    "id": "q2",
+    "question": "How does the system detect duplicate PDF uploads?",
+    "answerable": true,
+    "expected_pages": [
+      2
+    ],
+    "expected_answer": "The system detects duplicate PDF uploads by calculating a SHA-256 hash of the uploaded file and checking whether that file hash already exists in Weaviate. If the document already exists, the existing document ID and indexed vectors can be reused instead of ingesting the same PDF again.",
+    "document_id": "04e06dd1-5139-4c32-bde9-1b40392e6fcd"
+  },
+  {
+    "id": "q3",
+    "question": "What is the default maximum vector distance?",
+    "answerable": true,
+    "expected_pages": [
+      3
+    ],
+    "expected_answer": "The default maximum vector distance is 0.55.",
+    "document_id": "04e06dd1-5139-4c32-bde9-1b40392e6fcd"
+  },
+  {
+    "id": "q4",
+    "question": "What retrieval approach does the application use?",
+    "answerable": true,
+    "expected_pages": [
+      2,
+      3
+    ],
+    "expected_answer": "The application uses hybrid retrieval that combines semantic vector search with BM25 keyword search. The retrieval process uses the query embedding together with lexical matching to retrieve relevant document chunks.",
+    "document_id": "04e06dd1-5139-4c32-bde9-1b40392e6fcd"
+  },
+  {
+    "id": "q5",
+    "question": "Why is document_id used during retrieval?",
+    "answerable": true,
+    "expected_pages": [
+      2,
+      3
+    ],
+    "expected_answer": "The document_id is used as a metadata filter so retrieval can be restricted to chunks belonging to the selected document. This prevents information from unrelated indexed documents from being included in the answer context.",
+    "document_id": "04e06dd1-5139-4c32-bde9-1b40392e6fcd"
+  },
+  {
+    "id": "q6",
+    "question": "How does photosynthesis work?",
+    "answerable": false,
+    "expected_pages": [],
+    "expected_answer": "The available document does not contain enough relevant information to answer this question.",
+    "document_id": "04e06dd1-5139-4c32-bde9-1b40392e6fcd"
+  },
+  {
+    "id": "q7",
+    "question": "Who won the 2026 FIFA World Cup?",
+    "answerable": false,
+    "expected_pages": [],
+    "expected_answer": "The available document does not contain enough relevant information to answer this question.",
+    "document_id": "04e06dd1-5139-4c32-bde9-1b40392e6fcd"
+  },
+  {
+    "id": "q8",
+    "question": "What are the symptoms of influenza?",
+    "answerable": false,
+    "expected_pages": [],
+    "expected_answer": "The available document does not contain enough relevant information to answer this question.",
+    "document_id": "04e06dd1-5139-4c32-bde9-1b40392e6fcd"
+  }
+]

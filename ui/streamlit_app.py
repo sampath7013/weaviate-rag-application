@@ -5,6 +5,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
+import requests
 import streamlit as st
 
 
@@ -78,6 +79,15 @@ st.markdown(
         line-height: 1.7;
     }
 
+    .filter-card {
+        padding: 0.8rem;
+        border-radius: 8px;
+        background-color: rgba(59, 130, 246, 0.08);
+        margin-top: 0.5rem;
+        margin-bottom: 0.75rem;
+        font-size: 0.9rem;
+    }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -89,9 +99,9 @@ st.markdown(
 # ============================================================
 
 def load_streamlit_secrets() -> None:
-
     secret_names = [
         "APP_ENV",
+        "API_BASE_URL",
         "OPENAI_API_KEY",
         "WEAVIATE_HOST",
         "WEAVIATE_HTTP_PORT",
@@ -104,15 +114,12 @@ def load_streamlit_secrets() -> None:
     ]
 
     for secret_name in secret_names:
-
         try:
-
             value = st.secrets.get(
                 secret_name
             )
 
             if value is not None:
-
                 os.environ[
                     secret_name
                 ] = str(value)
@@ -125,11 +132,181 @@ load_streamlit_secrets()
 
 
 # ============================================================
-# Application imports
+# Backend mode
 # ============================================================
 
-from app.generation.rag_chain import ask_rag
-from app.ingestion.ingest import ingest_pdf
+API_BASE_URL = os.getenv(
+    "API_BASE_URL",
+    "",
+).rstrip("/")
+
+USE_API_BACKEND = bool(
+    API_BASE_URL
+)
+
+
+logger.info(
+    "streamlit_backend_mode | mode=%s | api_base_url=%s",
+    (
+        "api"
+        if USE_API_BACKEND
+        else "direct"
+    ),
+    (
+        API_BASE_URL
+        if API_BASE_URL
+        else "not-configured"
+    ),
+)
+
+
+# ============================================================
+# Direct RAG fallback imports
+# ============================================================
+
+if not USE_API_BACKEND:
+    from app.generation.rag_chain import ask_rag
+    from app.ingestion.ingest import ingest_pdf
+
+
+# ============================================================
+# FastAPI client
+# ============================================================
+
+def check_api_health() -> bool:
+    if not USE_API_BACKEND:
+        return True
+
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/health",
+            timeout=10,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        return (
+            data.get("status")
+            == "healthy"
+        )
+
+    except requests.RequestException:
+        logger.exception(
+            "api_health_check_failed | api_base_url=%s",
+            API_BASE_URL,
+        )
+
+        return False
+
+
+def upload_document_via_api(
+    uploaded_file,
+) -> dict:
+    uploaded_file.seek(0)
+
+    files = {
+        "file": (
+            uploaded_file.name,
+            uploaded_file.getvalue(),
+            "application/pdf",
+        )
+    }
+
+    response = requests.post(
+        f"{API_BASE_URL}/documents/upload",
+        files=files,
+        timeout=180,
+    )
+
+    if not response.ok:
+        try:
+            detail = (
+                response.json().get(
+                    "detail",
+                    response.text,
+                )
+            )
+
+        except ValueError:
+            detail = response.text
+
+        raise RuntimeError(
+            f"Document upload failed: {detail}"
+        )
+
+    return response.json()
+
+
+def ask_question_via_api(
+    question: str,
+    top_k: int,
+    document_id: str,
+    alpha: float,
+    min_score: float,
+    page_start: int | None = None,
+    page_end: int | None = None,
+) -> dict:
+    """
+    Send a RAG query to FastAPI.
+
+    page_start and page_end are optional metadata filters.
+    If omitted, the entire selected document is searched.
+    """
+
+    payload = {
+        "question": question,
+        "top_k": top_k,
+        "document_id": document_id,
+        "page_start": page_start,
+        "page_end": page_end,
+        "alpha": alpha,
+        "min_score": min_score,
+        "rerank": False,
+        "candidate_k": max(
+            10,
+            top_k,
+        ),
+    }
+
+    logger.info(
+        (
+            "streamlit_api_query | "
+            "document_id=%s | "
+            "page_start=%s | "
+            "page_end=%s | "
+            "top_k=%s"
+        ),
+        document_id,
+        page_start,
+        page_end,
+        top_k,
+    )
+
+    response = requests.post(
+        f"{API_BASE_URL}/ask",
+        json=payload,
+        timeout=180,
+    )
+
+    if not response.ok:
+        try:
+            detail = (
+                response.json().get(
+                    "detail",
+                    response.text,
+                )
+            )
+
+        except ValueError:
+            detail = response.text
+
+        raise RuntimeError(
+            f"RAG query failed: {detail}"
+        )
+
+    return response.json()
 
 
 # ============================================================
@@ -147,9 +324,7 @@ defaults = {
     "processing_message_type": None,
 }
 
-
 for key, value in defaults.items():
-
     if key not in st.session_state:
         st.session_state[key] = value
 
@@ -182,7 +357,6 @@ with st.sidebar:
     )
 
     st.divider()
-
 
     # ========================================================
     # Retrieval settings
@@ -230,8 +404,108 @@ with st.sidebar:
         ),
     )
 
-    st.divider()
+    # ========================================================
+    # Search scope / page-range metadata filtering
+    # ========================================================
 
+    st.markdown(
+        "**Search Scope**"
+    )
+
+    search_scope = st.radio(
+        "Choose where retrieval should search",
+        options=[
+            "Entire document",
+            "Page range",
+        ],
+        index=0,
+        help=(
+            "Search the complete document or restrict "
+            "Weaviate retrieval to a selected page range."
+        ),
+        label_visibility="collapsed",
+    )
+
+    page_start = None
+    page_end = None
+
+    if search_scope == "Page range":
+
+        total_pages = (
+            st.session_state.pages
+            if isinstance(
+                st.session_state.pages,
+                int,
+            )
+            and st.session_state.pages > 0
+            else 1
+        )
+
+        page_col1, page_col2 = (
+            st.columns(2)
+        )
+
+        with page_col1:
+            page_start = st.number_input(
+                "From page",
+                min_value=1,
+                max_value=total_pages,
+                value=1,
+                step=1,
+                disabled=(
+                    not st.session_state.document_ready
+                ),
+            )
+
+        with page_col2:
+            default_end = total_pages
+
+            page_end = st.number_input(
+                "To page",
+                min_value=1,
+                max_value=total_pages,
+                value=default_end,
+                step=1,
+                disabled=(
+                    not st.session_state.document_ready
+                ),
+            )
+
+        page_start = int(
+            page_start
+        )
+
+        page_end = int(
+            page_end
+        )
+
+        if page_start > page_end:
+            st.error(
+                "From page cannot be greater than To page."
+            )
+
+        elif st.session_state.document_ready:
+            st.markdown(
+                (
+                    '<div class="filter-card">'
+                    '🔎 Retrieval restricted to '
+                    f'<strong>pages {page_start}–{page_end}</strong>.'
+                    '</div>'
+                ),
+                unsafe_allow_html=True,
+            )
+
+    else:
+
+        page_start = None
+        page_end = None
+
+        if st.session_state.document_ready:
+            st.caption(
+                "Searching the entire document."
+            )
+
+    st.divider()
 
     # ========================================================
     # Current document
@@ -276,16 +550,12 @@ with st.sidebar:
             "Clear Document",
             use_container_width=True,
         ):
-
             st.session_state.document_id = None
             st.session_state.document_name = None
             st.session_state.document_ready = False
-
             st.session_state.messages = []
-
             st.session_state.pages = None
             st.session_state.chunks = None
-
             st.session_state.processing_message = None
             st.session_state.processing_message_type = None
 
@@ -298,11 +568,6 @@ with st.sidebar:
         )
 
     st.divider()
-
-
-    # ========================================================
-    # About project
-    # ========================================================
 
     with st.expander(
         "About this project"
@@ -324,6 +589,7 @@ with st.sidebar:
             - Weaviate hybrid retrieval
             - BM25 + semantic search
             - Document-specific filtering
+            - Page-range metadata filtering
             - Relevance score filtering
             - LLM relevance gate
             - Grounded answer generation
@@ -364,10 +630,11 @@ st.markdown(
     """
     <span class="tech-badge">Python</span>
     <span class="tech-badge">Streamlit</span>
+    <span class="tech-badge">FastAPI</span>
     <span class="tech-badge">OpenAI</span>
     <span class="tech-badge">Weaviate</span>
-    <span class="tech-badge">FastAPI</span>
     <span class="tech-badge">Hybrid RAG</span>
+    <span class="tech-badge">Metadata Filtering</span>
     """,
     unsafe_allow_html=True,
 )
@@ -376,7 +643,7 @@ st.divider()
 
 
 # ============================================================
-# Processing result / flash message
+# Processing result
 # ============================================================
 
 if st.session_state.processing_message:
@@ -385,13 +652,11 @@ if st.session_state.processing_message:
         st.session_state.processing_message_type
         == "success"
     ):
-
         st.success(
             st.session_state.processing_message
         )
 
     else:
-
         st.info(
             st.session_state.processing_message
         )
@@ -409,10 +674,6 @@ if (
     and uploaded_file is not None
 ):
 
-    document_id = str(
-        uuid.uuid4()
-    )
-
     original_filename = Path(
         uploaded_file.name
     ).name
@@ -426,55 +687,64 @@ if (
             expanded=True,
         ) as status:
 
-            st.write(
-                "Saving PDF..."
-            )
+            if USE_API_BACKEND:
 
-            suffix = Path(
-                original_filename
-            ).suffix
-
-            with tempfile.NamedTemporaryFile(
-                delete=False,
-                suffix=suffix,
-            ) as temporary_file:
-
-                temporary_file.write(
-                    uploaded_file.getbuffer()
+                st.write(
+                    "Sending document to FastAPI..."
                 )
 
-                temporary_path = (
-                    temporary_file.name
+                result = upload_document_via_api(
+                    uploaded_file
                 )
 
+            else:
 
-            st.write(
-                "Checking for duplicate document..."
-            )
+                document_id = str(
+                    uuid.uuid4()
+                )
 
-            st.write(
-                "Extracting and chunking text..."
-            )
+                st.write(
+                    "Saving PDF..."
+                )
 
-            st.write(
-                "Creating embeddings..."
-            )
+                suffix = Path(
+                    original_filename
+                ).suffix
 
-            st.write(
-                "Indexing vectors in Weaviate..."
-            )
+                with tempfile.NamedTemporaryFile(
+                    delete=False,
+                    suffix=suffix,
+                ) as temporary_file:
 
+                    temporary_file.write(
+                        uploaded_file.getbuffer()
+                    )
 
-            result = ingest_pdf(
-                file_path=temporary_path,
-                document_id=document_id,
-                document_name=original_filename,
-            )
+                    temporary_path = (
+                        temporary_file.name
+                    )
 
+                st.write(
+                    "Checking for duplicate document..."
+                )
 
-            # =================================================
-            # Store document state
-            # =================================================
+                st.write(
+                    "Extracting and chunking text..."
+                )
+
+                st.write(
+                    "Creating embeddings..."
+                )
+
+                st.write(
+                    "Indexing vectors in Weaviate..."
+                )
+
+                result = ingest_pdf(
+                    file_path=temporary_path,
+                    document_id=document_id,
+                    document_name=original_filename,
+                )
 
             st.session_state.document_id = (
                 result["document_id"]
@@ -485,7 +755,6 @@ if (
             )
 
             st.session_state.document_ready = True
-
             st.session_state.messages = []
 
             st.session_state.pages = (
@@ -499,11 +768,6 @@ if (
                     "chunks"
                 )
             )
-
-
-            # =================================================
-            # Duplicate document
-            # =================================================
 
             if result.get(
                 "duplicate",
@@ -528,11 +792,6 @@ if (
                     "info"
                 )
 
-
-            # =================================================
-            # New document
-            # =================================================
-
             else:
 
                 status.update(
@@ -552,9 +811,7 @@ if (
                     "success"
                 )
 
-
         st.rerun()
-
 
     except Exception:
 
@@ -570,7 +827,6 @@ if (
             "Please try again."
         )
 
-
     finally:
 
         if (
@@ -579,7 +835,6 @@ if (
                 temporary_path
             ).exists()
         ):
-
             Path(
                 temporary_path
             ).unlink()
@@ -609,7 +864,6 @@ if not st.session_state.document_ready:
             "Upload a PDF from the sidebar."
         )
 
-
     with col2:
 
         st.markdown(
@@ -620,7 +874,6 @@ if not st.session_state.document_ready:
             "The document is chunked, embedded, "
             "and indexed in Weaviate."
         )
-
 
     with col3:
 
@@ -638,16 +891,24 @@ if not st.session_state.document_ready:
         "Upload a PDF from the sidebar to start."
     )
 
-
-# ============================================================
-# Chat section
-# ============================================================
-
 else:
 
     st.subheader(
         "💬 Ask Your Document"
     )
+
+    if search_scope == "Page range":
+
+        st.caption(
+            f"Current search scope: pages "
+            f"{page_start}–{page_end}"
+        )
+
+    else:
+
+        st.caption(
+            "Current search scope: entire document"
+        )
 
     if not st.session_state.messages:
 
@@ -691,7 +952,6 @@ def render_sources(
                 st.columns(3)
             )
 
-
             with col1:
 
                 st.caption(
@@ -705,7 +965,6 @@ def render_sources(
                     )
                 )
 
-
             with col2:
 
                 st.caption(
@@ -718,7 +977,6 @@ def render_sources(
                         "N/A",
                     )
                 )
-
 
             with col3:
 
@@ -741,7 +999,6 @@ def render_sources(
                     st.write(
                         "N/A"
                     )
-
 
             st.caption(
                 source.get(
@@ -796,6 +1053,13 @@ for message in st.session_state.messages:
 # Chat input
 # ============================================================
 
+invalid_page_range = (
+    search_scope == "Page range"
+    and page_start is not None
+    and page_end is not None
+    and page_start > page_end
+)
+
 question = st.chat_input(
     (
         "Ask a question about the uploaded document..."
@@ -804,6 +1068,7 @@ question = st.chat_input(
     ),
     disabled=(
         not st.session_state.document_ready
+        or invalid_page_range
     ),
 )
 
@@ -822,18 +1087,10 @@ if question:
 
         st.session_state.messages.append(
             {
-                "role":
-                    "user",
-
-                "content":
-                    cleaned_question,
+                "role": "user",
+                "content": cleaned_question,
             }
         )
-
-
-        # ====================================================
-        # User message
-        # ====================================================
 
         with st.chat_message(
             "user"
@@ -842,11 +1099,6 @@ if question:
             st.markdown(
                 cleaned_question
             )
-
-
-        # ====================================================
-        # Assistant response
-        # ====================================================
 
         with st.chat_message(
             "assistant"
@@ -858,16 +1110,33 @@ if question:
                     "Searching document..."
                 ):
 
-                    result = ask_rag(
-                        question=cleaned_question,
-                        top_k=top_k,
-                        document_id=(
-                            st.session_state.document_id
-                        ),
-                        alpha=alpha,
-                        min_score=min_score,
-                    )
+                    if USE_API_BACKEND:
 
+                        result = ask_question_via_api(
+                            question=cleaned_question,
+                            top_k=top_k,
+                            document_id=(
+                                st.session_state.document_id
+                            ),
+                            alpha=alpha,
+                            min_score=min_score,
+                            page_start=page_start,
+                            page_end=page_end,
+                        )
+
+                    else:
+
+                        result = ask_rag(
+                            question=cleaned_question,
+                            top_k=top_k,
+                            document_id=(
+                                st.session_state.document_id
+                            ),
+                            page_start=page_start,
+                            page_end=page_end,
+                            alpha=alpha,
+                            min_score=min_score,
+                        )
 
                 answer = result.get(
                     "answer",
@@ -883,15 +1152,9 @@ if question:
                     [],
                 )
 
-
                 st.markdown(
                     answer
                 )
-
-
-                # =================================================
-                # Sources
-                # =================================================
 
                 if sources:
 
@@ -906,24 +1169,13 @@ if question:
                         "document context was found."
                     )
 
-
-                # =================================================
-                # Save assistant response
-                # =================================================
-
                 st.session_state.messages.append(
                     {
-                        "role":
-                            "assistant",
-
-                        "content":
-                            answer,
-
-                        "sources":
-                            sources,
+                        "role": "assistant",
+                        "content": answer,
+                        "sources": sources,
                     }
                 )
-
 
             except Exception:
 
@@ -931,9 +1183,13 @@ if question:
                     (
                         "rag_query_failed | "
                         "document_id=%s | "
+                        "page_start=%s | "
+                        "page_end=%s | "
                         "question=%s"
                     ),
                     st.session_state.document_id,
+                    page_start,
+                    page_end,
                     cleaned_question,
                 )
 
@@ -948,14 +1204,9 @@ if question:
 
                 st.session_state.messages.append(
                     {
-                        "role":
-                            "assistant",
-
-                        "content":
-                            error_message,
-
-                        "sources":
-                            [],
+                        "role": "assistant",
+                        "content": error_message,
+                        "sources": [],
                     }
                 )
 
